@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -42,6 +45,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// save blockchain when manually interrupted
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("System interrupted")
+		Blockchain.Save(data.FileName)
+		fmt.Println("Blockchain saved")
+		os.Exit(0)
+	}()
 
 	// why anonymous function??
 	go func() {
