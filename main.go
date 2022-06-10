@@ -1,15 +1,19 @@
 package main
 
 import (
+	"Gone/data"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -18,16 +22,16 @@ import (
 )
 
 // Block represents each 'item' in the blockchain
-type Block struct {
-	Index     int
-	Timestamp string
-	BPM       int
-	Hash      string
-	PrevHash  string
-}
+// type Block struct {
+// 	Index     int
+// 	Timestamp string
+// 	BPM       int
+// 	Hash      string
+// 	PrevHash  string
+// }
 
 // Blockchain is a series of validated Blocks
-var Blockchain []Block
+var Blockchain data.Blockchain
 
 // Message takes incoming JSON payload for writing heart rate
 type Message struct {
@@ -42,15 +46,39 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// save blockchain when manually interrupted
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		t := time.Now()
-		genesisBlock := Block{}
-		genesisBlock = Block{0, t.String(), 0, calculateHash(genesisBlock), ""}
-		spew.Dump(genesisBlock)
+		<-sigCh
+		fmt.Println("System interrupted")
+		Blockchain.Save(data.FileName)
+		fmt.Println("Blockchain saved")
+		os.Exit(0)
+	}()
 
-		mutex.Lock()
-		Blockchain = append(Blockchain, genesisBlock)
-		mutex.Unlock()
+	// why anonymous function??
+	go func() {
+		_, err := os.Stat(data.FileName)
+
+		// if data exist then add blockchain
+		if err == nil {
+			Blockchain = data.Load_Blockchain(data.FileName)
+		} else {
+			t := time.Now()
+			genesisBlock := data.Block{}
+			genesisBlock = data.Block{
+				Index:     0,
+				Timestamp: t.String(),
+				BPM:       0,
+				Hash:      calculateHash(genesisBlock),
+				PrevHash:  "",
+			}
+			spew.Dump(genesisBlock)
+			mutex.Lock()
+			Blockchain.AppendBlock(genesisBlock)
+			mutex.Unlock()
+		}
 	}()
 	log.Fatal(run())
 
@@ -107,15 +135,17 @@ func handleWriteBlock(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	mutex.Lock()
-	prevBlock := Blockchain[len(Blockchain)-1]
+	prevBlock := Blockchain.Data[len(Blockchain.Data)-1]
 	newBlock := generateBlock(prevBlock, msg.BPM)
 
 	if isBlockValid(newBlock, prevBlock) {
-		Blockchain = append(Blockchain, newBlock)
+		Blockchain.AppendBlock(newBlock)
+		// Blockchain = append(Blockchain, newBlock)
 		spew.Dump(Blockchain)
 	}
 	mutex.Unlock()
 
+	Blockchain.Save(data.FileName)
 	respondWithJSON(w, r, http.StatusCreated, newBlock)
 
 }
@@ -132,7 +162,7 @@ func respondWithJSON(w http.ResponseWriter, r *http.Request, code int, payload i
 }
 
 // make sure block is valid by checking index, and comparing the hash of the previous block
-func isBlockValid(newBlock, oldBlock Block) bool {
+func isBlockValid(newBlock, oldBlock data.Block) bool {
 	if oldBlock.Index+1 != newBlock.Index {
 		return false
 	}
@@ -149,7 +179,7 @@ func isBlockValid(newBlock, oldBlock Block) bool {
 }
 
 // SHA256 hasing
-func calculateHash(block Block) string {
+func calculateHash(block data.Block) string {
 	record := strconv.Itoa(block.Index) + block.Timestamp + strconv.Itoa(block.BPM) + block.PrevHash
 	h := sha256.New()
 	h.Write([]byte(record))
@@ -158,9 +188,9 @@ func calculateHash(block Block) string {
 }
 
 // create a new block using previous block's hash
-func generateBlock(oldBlock Block, BPM int) Block {
+func generateBlock(oldBlock data.Block, BPM int) data.Block {
 
-	var newBlock Block
+	var newBlock data.Block
 
 	t := time.Now()
 
